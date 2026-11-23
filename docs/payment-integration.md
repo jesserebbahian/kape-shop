@@ -1,0 +1,10 @@
+# Maya sandbox payment integration
+
+1. Set `PAYMENT_PROVIDER=maya`, the matching checkout API key pair, and `MAYA_BASE_URL=https://pg-sandbox.paymaya.com` on the backend. Set `APP_URL` to the deployed frontend origin and add that origin to `ALLOWED_ORIGINS`.
+2. Use the two sandbox RSA verification keys from [Maya Webhook Security](https://developers.maya.ph/reference/webhook-security) as `MAYA_WEBHOOK_PUBLIC_KEY_1` and `MAYA_WEBHOOK_PUBLIC_KEY_2`. These are PEM keys for signature verification, separate from the checkout API key pair. Render can store a multiline PEM value. Literal `\n` separators also work.
+3. Register `https://YOUR-API.onrender.com/api/v1/webhooks/maya` for payment success, failure, cancellation and expiration notifications using [Maya's checkout webhook setup](https://developers.maya.ph/reference/configuring-your-webhook-for-maya-checkout). The route uses the signature and timestamp headers.
+4. Pay with a successful test account from [Maya Sandbox Credentials](https://developers.maya.ph/reference/sandbox-credentials-and-cards). Record the redirect, the authoritative Paid status, and the Webhooks tab with the matching event reference.
+5. Send the unsigned Postman request and demonstrate the 401. Run the signed webhook integration test in `npm test` to show valid acceptance, rejection of tampering, one paid transition and duplicate replay handling.
+6. To show missed-webhook recovery, use an isolated sandbox setup with delivery disabled, then open the return page or select **Check payment** in Admin Orders. The API retrieves the payment independently of the webhook.
+
+`MayaProvider.js` verifies the incoming signature against the canonical form of the received JSON and checks timestamp freshness. `paymentService.js` stores a unique event before verification, retrieves the gateway's payment status, compares amount and PHP currency, and flags discrepancies. The webhook request currently waits for gateway verification and relies on provider retries for temporary failures. Hosted checkout, gateway delivery and the successful sandbox recording require the real deployed sandbox setup.

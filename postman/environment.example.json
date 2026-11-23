@@ -1,0 +1,36 @@
+{
+  "name": "Kape Shop example",
+  "values": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000/api/v1",
+      "enabled": true,
+      "type": "default"
+    },
+    {
+      "key": "customerEmail",
+      "value": "juan@kape.test",
+      "enabled": true,
+      "type": "default"
+    },
+    {
+      "key": "customerPassword",
+      "value": "",
+      "enabled": true,
+      "type": "secret"
+    },
+    {
+      "key": "adminEmail",
+      "value": "admin@kape.test",
+      "enabled": true,
+      "type": "default"
+    },
+    {
+      "key": "adminPassword",
+      "value": "",
+      "enabled": true,
+      "type": "secret"
+    }
+  ],
+  "_postman_variable_scope": "environment"
+}

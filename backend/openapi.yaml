@@ -1,0 +1,352 @@
+openapi: 3.0.3
+info:
+  title: Kape Roast-to-Order API
+  version: 1.0.0
+  description: Orders are assigned to weekly roast batches. Payment status changes only after the gateway is verified.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: BATCH_FULL }
+            message: { type: string }
+            details: {}
+        requestId: { type: string }
+    Product:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        category: { type: string, enum: [Single Origin, Blend, Barako, Robusta, Specialty] }
+        origin: { type: string }
+        roastLevel: { type: string, enum: [light, medium, dark] }
+        tastingNotes: { type: string }
+        description: { type: string }
+        imageUrl: { type: string, nullable: true }
+        basePriceCents: { type: integer, example: 32000 }
+        active: { type: boolean }
+    ProductInput:
+      type: object
+      required: [name, category, origin, roastLevel, basePriceCents]
+      properties:
+        name: { type: string }
+        category: { type: string }
+        origin: { type: string }
+        roastLevel: { type: string }
+        tastingNotes: { type: string }
+        description: { type: string }
+        imageUrl: { type: string, nullable: true }
+        basePriceCents: { type: integer, minimum: 0 }
+        active: { type: boolean }
+    CartItemInput:
+      type: object
+      required: [productId, sizeG, grind, quantity]
+      properties:
+        productId: { type: integer }
+        sizeG: { type: integer, enum: [250, 500] }
+        grind: { type: string, enum: [whole_bean, filter, espresso] }
+        quantity: { type: integer, minimum: 1, maximum: 10 }
+    CheckoutInput:
+      type: object
+      required: [shippingName, shippingPhone, shippingAddress]
+      properties:
+        shippingName: { type: string }
+        shippingPhone: { type: string }
+        shippingAddress: { type: string }
+        couponCode: { type: string }
+    Order:
+      type: object
+      properties:
+        id: { type: integer }
+        status: { type: string, enum: [pending_payment, paid, roasting, shipped, delivered, cancelled, expired] }
+        batchId: { type: integer }
+        subtotalCents: { type: integer }
+        discountCents: { type: integer }
+        shippingCents: { type: integer }
+        totalCents: { type: integer }
+        checkoutUrl: { type: string, nullable: true }
+        flagged: { type: boolean }
+    Batch:
+      type: object
+      properties:
+        id: { type: integer }
+        roastDate: { type: string, format: date }
+        cutoffAt: { type: string, format: date-time }
+        capacityUnits: { type: integer }
+        reservedUnits: { type: integer }
+        remainingUnits: { type: integer }
+        status: { type: string }
+    Coupon:
+      type: object
+      properties:
+        code: { type: string }
+        type: { type: string, enum: [percent, fixed] }
+        value: { type: integer }
+        minSpendCents: { type: integer }
+        expiresAt: { type: string, nullable: true }
+        usageLimit: { type: integer, nullable: true }
+        perCustomerLimit: { type: integer, nullable: true }
+        active: { type: boolean }
+  responses:
+    Unauthorized: { description: Missing or invalid token, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Role not allowed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Conflict with current state, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Invalid: { description: Validation failed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: integer } }
+    Code: { name: code, in: path, required: true, schema: { type: string } }
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create a customer account
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password, name], properties: { email: { type: string }, password: { type: string, minLength: 8 }, name: { type: string } } }, example: { email: new@kape.test, password: Customer123!, name: New Customer } } } }
+      responses: { '201': { description: Created }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Invalid' } }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in and receive a token
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password], properties: { email: { type: string }, password: { type: string } } }, example: { email: juan@kape.test, password: Customer123! } } } }
+      responses: { '200': { description: Signed in }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /products:
+    get:
+      tags: [Catalog]
+      summary: List active products
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: roast, in: query, schema: { type: string } }
+        - { name: minPrice, in: query, schema: { type: integer }, description: Pesos }
+        - { name: maxPrice, in: query, schema: { type: integer }, description: Pesos }
+        - { name: sort, in: query, schema: { type: string, enum: [newest, price_asc, price_desc] } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 50 } }
+      responses: { '200': { description: Paginated list with meta.total, meta.page, meta.limit }, '422': { $ref: '#/components/responses/Invalid' } }
+  /products/{id}:
+    get:
+      tags: [Catalog]
+      summary: Product detail with variant price table and remaining roast capacity
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' } }
+  /batches:
+    get:
+      tags: [Catalog]
+      summary: Open roast batches with remaining capacity
+      responses: { '200': { description: OK } }
+  /ai/discover:
+    post:
+      tags: [AI]
+      summary: AI coffee finder grounded on database products
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [query], properties: { query: { type: string, maxLength: 200 } } }, example: { query: sweet and low acidity for milk coffee } } } }
+      responses: { '200': { description: Validated picks, or keyword fallback when AI is unavailable }, '422': { $ref: '#/components/responses/Invalid' }, '429': { description: Rate limited } }
+  /cart:
+    get:
+      tags: [Cart]
+      summary: View cart with server-calculated totals
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /cart/items:
+    post:
+      tags: [Cart]
+      summary: Add an item
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CartItemInput' } } } }
+      responses: { '201': { description: Added }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Invalid' } }
+  /cart/items/{id}:
+    patch:
+      tags: [Cart]
+      summary: Change quantity
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [quantity], properties: { quantity: { type: integer } } } } } }
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' } }
+    delete:
+      tags: [Cart]
+      summary: Remove an item
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' } }
+  /checkout/quote:
+    post:
+      tags: [Checkout]
+      summary: Order summary with coupon applied
+      security: [{ bearerAuth: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { couponCode: { type: string } } } } } }
+      responses: { '200': { description: Subtotal, discount, shipping, total, assigned batch }, '422': { $ref: '#/components/responses/Invalid' } }
+  /checkout:
+    post:
+      tags: [Checkout]
+      summary: Reserve a batch slot, create the order and the Maya payment session
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 80 } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CheckoutInput' } } } }
+      responses: { '201': { description: Order with checkoutUrl }, '400': { description: Missing idempotency key }, '409': { description: BATCH_FULL or BATCH_CLOSED }, '422': { description: Validation or coupon error }, '502': { description: Payment provider error } }
+  /orders:
+    get:
+      tags: [Orders]
+      summary: My orders
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK } }
+  /orders/{id}:
+    get:
+      tags: [Orders]
+      summary: My order detail with history
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' } }
+  /orders/{id}/cancel:
+    post:
+      tags: [Orders]
+      summary: Cancel an unpaid order
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Cancelled }, '409': { $ref: '#/components/responses/Conflict' } }
+  /orders/{id}/reconcile:
+    post:
+      tags: [Orders]
+      summary: Verify payment with the gateway and apply the result
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Outcome and order }, '404': { $ref: '#/components/responses/NotFound' } }
+  /webhooks/{provider}:
+    post:
+      tags: [Payments]
+      summary: Gateway webhook receiver (maya or paymongo)
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [maya, paymongo] } }
+        - { name: X-Maya-Webhook-Signature, in: header, schema: { type: string }, description: Required for Maya }
+        - { name: X-Maya-Webhook-Timestamp, in: header, schema: { type: integer, format: int64 }, description: Required for Maya (Unix milliseconds) }
+        - { name: Paymongo-Signature, in: header, schema: { type: string }, description: Required for PayMongo }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: processed, duplicate, or ignored }, '401': { description: Invalid webhook authentication } }
+  /admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: Paid orders, gross sales, pending orders, low capacity batches
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+  /admin/products:
+    get:
+      tags: [Admin]
+      summary: List all products including inactive
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+    post:
+      tags: [Admin]
+      summary: Create a product
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProductInput' } } } }
+      responses: { '201': { description: Created }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Invalid' } }
+  /admin/products/{id}:
+    patch:
+      tags: [Admin]
+      summary: Update or deactivate a product
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProductInput' } } } }
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' } }
+    delete:
+      tags: [Admin]
+      summary: Delete a product that has no orders
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '204': { description: Deleted }, '409': { $ref: '#/components/responses/Conflict' } }
+  /admin/batches:
+    get:
+      tags: [Admin]
+      summary: List all batches
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Admin]
+      summary: Create a roast batch
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [roastDate, cutoffAt, capacityUnits], properties: { roastDate: { type: string, example: '2026-12-05' }, cutoffAt: { type: string, format: date-time }, capacityUnits: { type: integer } } } } } }
+      responses: { '201': { description: Created }, '422': { $ref: '#/components/responses/Invalid' } }
+  /admin/batches/{id}/adjust:
+    post:
+      tags: [Admin]
+      summary: Adjust batch capacity with an auditable reason
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [delta, reason], properties: { delta: { type: integer }, reason: { type: string } } } } } }
+      responses: { '200': { description: OK }, '409': { $ref: '#/components/responses/Conflict' } }
+  /admin/inventory-log:
+    get:
+      tags: [Admin]
+      summary: Capacity adjustment audit log
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK } }
+  /admin/coupons:
+    get:
+      tags: [Admin]
+      summary: List coupons
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Admin]
+      summary: Create a coupon
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Coupon' } } } }
+      responses: { '201': { description: Created }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Invalid' } }
+  /admin/coupons/{code}:
+    patch:
+      tags: [Admin]
+      summary: Activate, deactivate, or change expiry and usage limit
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Code' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { active: { type: boolean }, expiresAt: { type: string, nullable: true }, usageLimit: { type: integer, nullable: true } } } } } }
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' } }
+  /admin/orders:
+    get:
+      tags: [Admin]
+      summary: List orders, filter by status and date
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses: { '200': { description: OK } }
+  /admin/orders/{id}:
+    get:
+      tags: [Admin]
+      summary: Order detail
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: OK }, '404': { $ref: '#/components/responses/NotFound' } }
+  /admin/orders/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Move an order along the lifecycle
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [roasting, shipped, delivered, cancelled] } } } } } }
+      responses: { '200': { description: OK }, '409': { description: ILLEGAL_TRANSITION } }
+  /admin/orders/{id}/reconcile:
+    post:
+      tags: [Admin]
+      summary: Recover an order whose webhook was missed
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Outcome and order } }
+  /admin/webhook-events:
+    get:
+      tags: [Admin]
+      summary: Stored webhook events
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: OK } }
